@@ -20,13 +20,15 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
    - Previous day strain → onset latency
    - Onset latency trends over 7/14/30 day rolling windows
 
+5. **AI Insights** - Raw correlation data and trends are passed to Claude Sonnet to generate recommendations
+
 ## CLI Usage
 
 ```bash
 TODO
 ```
 
-## Tech Stack
+## Tech Stack (WIP)
 
 | Layer            | Technology                        |
 |------------------|-----------------------------------|
@@ -36,6 +38,7 @@ TODO
 | Storage          | AWS S3                            |
 | Compute          | AWS Lambda                        |
 | API              | AWS API Gateway                   |
+| AI Insights      | Claude Sonnet (Anthropic API)     |
 
 ## Data Model
 
