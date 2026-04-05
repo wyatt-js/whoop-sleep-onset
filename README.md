@@ -1,0 +1,78 @@
+# Whoop Sleep Onset
+
+A  Go CLI that measures sleep onset latency by combining iOS Shortcut phone-lock detection with WHOOP biometric data. Computes correlations between how long it takes you to fall asleep and next-day recovery, HRV, strain, and other metrics.
+
+## Why
+
+WHOOP does not track sleep onset latency and when you attempt to fall asleep. It only tracks "sleep start time" in their app and exposes it via the developer API. This tool derives the metric independently via a timestamp when you put down your phone at night (via iOS Shortcut) minus WHOOP's detected sleep start and then layers correlation and Claude AI analysis.
+
+## How It Works (WIP)
+
+1. **Phone-Down Detection** — An iOS Shortcut automation triggers when the iPhone connects to a charger during night hours (10pm–3am). It sends an HTTP POST with a timestamp to the API Gateway endpoint hosted with Amazon Web Services. Duplicate events (e.g., unplugging and re-plugging) are deduplicated server-side by taking the last event before WHOOP's detected sleep start.
+
+2. **WHOOP Data Ingestion** — A nightly Lambda pulls sleep, recovery, and strain data from the WHOOP API. Webhooks provide real-time updates when sleep events are scored.
+
+3. **Sleep Onset Derivation** — The system computes the delta between the phone-lock timestamp and WHOOP's sleep `start` time. This is your sleep onset latency.
+
+4. **Correlation Engine** — Goroutines fan out to concurrently compute correlations across metrics:
+   - Sleep onset latency → next-day recovery score
+   - Sleep onset latency → HRV (RMSSD)
+   - Previous day strain → onset latency
+   - Onset latency trends over 7/14/30 day rolling windows
+
+## CLI Usage
+
+```bash
+TODO
+```
+
+## Tech Stack
+
+| Layer            | Technology                        |
+|------------------|-----------------------------------|
+| Language         | Go                                |
+| CLI Framework    | Cobra + Viper                     |
+| Database         | AWS DynamoDB                      |
+| Storage          | AWS S3                            |
+| Compute          | AWS Lambda                        |
+| API              | AWS API Gateway                   |
+
+## Data Model
+
+```sql
+TODO
+```
+
+## Concurrency Model
+
+```
+TODO
+```
+
+## iOS Shortcut Setup
+
+1. Open **Shortcuts** app on iPhone
+2. Go to **Automation** → **New Automation**
+3. Select **Charger** → **Is Connected**
+4. Toggle **Run Immediately** (no confirmation)
+5. Add action: **If** → Current Time is between 10:00 PM and 3:00 AM
+6. Add action: **Get Contents of URL**
+   - URL: `https://<your-api-gateway-url>/phone-off`
+   - Method: `POST`
+   - Headers: `Authorization: Bearer <your-token>`
+
+## Development
+
+```bash
+TODO
+```
+
+## Project Structure
+
+```
+TODO
+```
+
+## License
+
+MIT
