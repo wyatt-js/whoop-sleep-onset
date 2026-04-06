@@ -38,6 +38,18 @@ sleeponset auth
 sleeponset configure --token <your-token>
 ```
 
+## iOS Shortcut Setup
+
+1. Open **Shortcuts** app on iPhone
+2. Go to **Automation** → **New Automation**
+3. Select **Charger** → **Is Connected**
+4. Toggle **Run Immediately** (no confirmation)
+5. Add action: **If** → Current Time is between 10:00 PM and 3:00 AM
+6. Add action: **Get Contents of URL**
+   - URL: `https://<your-api-gateway-url>/phone-lock`
+   - Method: `POST`
+   - Headers: `Authorization: Bearer <your-token>`
+
 ## Tech Stack (WIP)
 
 | Layer            | Technology                        |
@@ -61,18 +73,6 @@ TODO
 ```
 TODO
 ```
-
-## iOS Shortcut Setup
-
-1. Open **Shortcuts** app on iPhone
-2. Go to **Automation** → **New Automation**
-3. Select **Charger** → **Is Connected**
-4. Toggle **Run Immediately** (no confirmation)
-5. Add action: **If** → Current Time is between 10:00 PM and 3:00 AM
-6. Add action: **Get Contents of URL**
-   - URL: `https://<your-api-gateway-url>/phone-off`
-   - Method: `POST`
-   - Headers: `Authorization: Bearer <your-token>`
 
 ## Project Structure
 
