@@ -79,6 +79,29 @@ func (c *Client) PutUser(ctx context.Context, user *User) error {
 	return err
 }
 
+func (c *Client) GetUserByWhoopID(ctx context.Context, whoopUserID int) (*User, error) {
+	pk := fmt.Sprintf("USER#%d", whoopUserID)
+	result, err := c.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: pk},
+			"SK": &types.AttributeValueMemberS{Value: "PROFILE"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user by whoop ID: %w", err)
+	}
+	if result.Item == nil {
+		return nil, fmt.Errorf("no user found for whoop ID %d", whoopUserID)
+	}
+
+	var user User
+	if err := attributevalue.UnmarshalMap(result.Item, &user); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal user: %w", err)
+	}
+	return &user, nil
+}
+
 func (c *Client) GetUserByBearerToken(ctx context.Context, token string) (*User, error) {
 	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(tableName),
@@ -103,6 +126,103 @@ func (c *Client) GetUserByBearerToken(ctx context.Context, token string) (*User,
 	}
 
 	return &user, nil
+}
+
+type WebhookEvent struct {
+	PK        string    `dynamodbav:"PK"`
+	SK        string    `dynamodbav:"SK"`
+	Type      string    `dynamodbav:"type"`
+	WhoopID   string    `dynamodbav:"whoop_id"`
+	TraceID   string    `dynamodbav:"trace_id"`
+	Timestamp time.Time `dynamodbav:"timestamp"`
+}
+
+func (c *Client) PutWebhookEvent(ctx context.Context, whoopUserID int, eventType, whoopID, traceID string) error {
+	now := time.Now().UTC()
+	event := WebhookEvent{
+		PK:        fmt.Sprintf("WHOOPUSER#%d", whoopUserID),
+		SK:        fmt.Sprintf("WEBHOOK#%s#%s", eventType, now.Format(time.RFC3339)),
+		Type:      eventType,
+		WhoopID:   whoopID,
+		TraceID:   traceID,
+		Timestamp: now,
+	}
+
+	item, err := attributevalue.MarshalMap(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal webhook event: %w", err)
+	}
+
+	_, err = c.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	})
+
+	return err
+}
+
+type SyncRecord struct {
+	PK        string    `dynamodbav:"PK"`
+	SK        string    `dynamodbav:"SK"`
+	Data      string    `dynamodbav:"data"`
+	SyncedAt  time.Time `dynamodbav:"synced_at"`
+}
+
+func (c *Client) PutSyncRecord(ctx context.Context, userPK, sk, data string) error {
+	record := SyncRecord{
+		PK:       userPK,
+		SK:       sk,
+		Data:     data,
+		SyncedAt: time.Now().UTC(),
+	}
+
+	item, err := attributevalue.MarshalMap(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal sync record: %w", err)
+	}
+
+	_, err = c.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableName),
+		Item:      item,
+	})
+
+	return err
+}
+
+func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
+	var users []User
+	var lastKey map[string]types.AttributeValue
+
+	for {
+		input := &dynamodb.ScanInput{
+			TableName:        aws.String(tableName),
+			FilterExpression: aws.String("SK = :sk"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":sk": &types.AttributeValueMemberS{Value: "PROFILE"},
+			},
+		}
+		if lastKey != nil {
+			input.ExclusiveStartKey = lastKey
+		}
+
+		result, err := c.db.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan users: %w", err)
+		}
+
+		var page []User
+		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal users: %w", err)
+		}
+		users = append(users, page...)
+
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+
+	return users, nil
 }
 
 func (c *Client) GetUser(ctx context.Context, userID string) (*User, error) {

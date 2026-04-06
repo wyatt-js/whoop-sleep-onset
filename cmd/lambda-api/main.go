@@ -226,13 +226,12 @@ func handleWhoopWebhook(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 
 	log.Info().Str("type", webhook.Type).Str("id", webhook.ID).Msg("whoop webhook received")
 
-	switch webhook.Type {
-	case "sleep.updated":
-		log.Info().Str("sleep_id", webhook.ID).Msg("processing sleep update")
-	case "recovery.updated":
-		log.Info().Str("recovery_id", webhook.ID).Msg("processing recovery update")
+	if err := db.PutWebhookEvent(ctx, webhook.UserID, webhook.Type, webhook.ID, webhook.TraceID); err != nil {
+		log.Error().Err(err).Msg("failed to store webhook event")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to store webhook event"})
 	}
 
+	log.Info().Str("type", webhook.Type).Str("id", webhook.ID).Msg("webhook event stored")
 	return respond(http.StatusOK, map[string]string{"status": "ok"})
 }
 
