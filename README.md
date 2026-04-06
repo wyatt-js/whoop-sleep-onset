@@ -28,6 +28,9 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
 # Build the CLI
 make build-cli
 
+# (OPTIONAL) Add $GOPATH/bin to PATH
+export PATH=$PATH:$(go env GOPATH)/bin 
+
 # Install globally
 go install ./cmd/sleeponset
 
@@ -46,7 +49,7 @@ sleeponset configure --token <your-token>
 4. Toggle **Run Immediately** (no confirmation)
 5. Add action: **If** → Current Time is between 10:00 PM and 3:00 AM
 6. Add action: **Get Contents of URL**
-   - URL: `https://<your-api-gateway-url>/phone-lock`
+   - URL: `https://ozls3538ce.execute-api.us-east-1.amazonaws.com/phone-lock`
    - Method: `POST`
    - Headers: `Authorization: Bearer <your-token>`
 
