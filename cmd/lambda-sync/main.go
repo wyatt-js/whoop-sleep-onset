@@ -123,7 +123,7 @@ func handler(ctx context.Context, event events.DynamoDBEvent) error {
 	}
 
 	if syncErrors > 0 {
-		return fmt.Errorf("sync completed with %d errors", syncErrors)
+		log.Warn().Int("errors", syncErrors).Msg("sync completed with errors")
 	}
 	return nil
 }
