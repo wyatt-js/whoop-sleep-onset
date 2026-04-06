@@ -12,7 +12,7 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
 
 2. **WHOOP Data Ingestion** — A nightly Lambda pulls sleep, recovery, and strain data from the WHOOP API. Webhooks provide real-time updates when sleep events are scored.
 
-3. **Sleep Onset Derivation** — The system computes the delta between the phone-lock timestamp and WHOOP's sleep `start` time. This is your sleep onset latency.
+3. **Sleep Onset Derivation** — The system computes the delta between the phone-lock timestamp and WHOOP's sleep start time. This is your sleep onset latency.
 
 4. **Correlation Engine** — Goroutines fan out to concurrently compute correlations across metrics:
    - Sleep onset latency → next-day recovery score
@@ -25,7 +25,17 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
 ## CLI Usage
 
 ```bash
-TODO
+# Build the CLI
+make build-cli
+
+# Install globally
+go install ./cmd/sleeponset
+
+# Open browser to authenticate with WHOOP
+sleeponset auth
+
+# Save your token after authenticating
+sleeponset configure --token <your-token>
 ```
 
 ## Tech Stack (WIP)
@@ -64,16 +74,25 @@ TODO
    - Method: `POST`
    - Headers: `Authorization: Bearer <your-token>`
 
-## Development
-
-```bash
-TODO
-```
-
 ## Project Structure
 
 ```
-TODO
+├── cmd/
+│   ├── cli/                  # Cobra CLI (sleeponset)
+│   │   ├── main.go           # Root command and Viper config
+│   │   ├── auth.go           # `auth` command — opens browser for WHOOP OAuth
+│   │   └── configure.go      # `configure` command — saves token/api-url
+│   └── lambda-api/
+│       └── main.go           # API Gateway Lambda handler (auth, phone-lock, webhooks)
+├── internal/
+│   ├── dynamo/
+│   │   └── client.go         # DynamoDB client — users and phone-lock events
+│   └── whoop/
+│       ├── oauth.go          # WHOOP OAuth2 flow (state, token exchange)
+│       └── profile.go        # WHOOP profile API
+├── Makefile
+├── go.mod
+└── go.sum
 ```
 
 ## License
