@@ -215,6 +215,7 @@ func loadOAuthConfig(ctx context.Context) (*whoop.OAuthConfig, error) {
 	return &whoop.OAuthConfig{
 		ClientID:     secrets["WHOOP_CLIENT_ID"],
 		ClientSecret: secrets["WHOOP_CLIENT_SECRET"],
+		RedirectURI:  os.Getenv("WHOOP_REDIRECT_URI"),
 	}, nil
 }
 

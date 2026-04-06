@@ -159,6 +159,10 @@ func RefreshAccessToken(ctx context.Context, cfg *OAuthConfig, refreshToken stri
 		"refresh_token": {refreshToken},
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
+		"scope":         {"read:recovery read:sleep read:profile read:cycles"},
+	}
+	if cfg.RedirectURI != "" {
+		data.Set("redirect_uri", cfg.RedirectURI)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
