@@ -10,7 +10,7 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
 
 1. **Phone-Down Detection** — An iOS Shortcut automation triggers when the iPhone connects to a charger during night hours (10pm–3am). It sends an HTTP POST with a timestamp to the API Gateway endpoint hosted with Amazon Web Services. Duplicate events (e.g., unplugging and re-plugging) are deduplicated server-side by taking the last event before WHOOP's detected sleep start.
 
-2. **WHOOP Data Ingestion** — A nightly Lambda pulls sleep, recovery, and strain data from the WHOOP API. Webhooks provide real-time updates when sleep events are scored.
+2. **WHOOP Data Ingestion** — After a WHOOP webhook event, a Lambda pulls sleep, recovery, and strain data from the WHOOP API.
 
 3. **Sleep Onset Derivation** — The system computes the delta between the phone-lock timestamp and WHOOP's sleep start time. This is your sleep onset latency.
 
@@ -39,6 +39,9 @@ sleeponset auth
 
 # Save your token after authenticating
 sleeponset configure --token <your-token>
+
+# After a night of sleep
+sleeponset last
 ```
 
 ## iOS Shortcut Setup
