@@ -30,6 +30,8 @@ var (
 
 	windowStart = 21
 	windowEnd   = 3
+
+	userTZ *time.Location
 )
 
 func init() {
@@ -47,6 +49,15 @@ func init() {
 	oauthCfg, err = loadOAuthConfig(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load oauth config")
+	}
+
+	tzName := os.Getenv("USER_TIMEZONE")
+	if tzName == "" {
+		tzName = "America/New_York"
+	}
+	userTZ, err = time.LoadLocation(tzName)
+	if err != nil {
+		log.Fatal().Err(err).Str("tz", tzName).Msg("failed to load timezone")
 	}
 }
 
@@ -174,16 +185,18 @@ func handlePhoneLock(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 		LockedAt time.Time `json:"locked_at"`
 	}
 
-	if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
-		log.Error().Err(err).Msg("failed to parse phone-lock body")
-		return respond(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	if req.Body != "" {
+		if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+			log.Error().Err(err).Msg("failed to parse phone-lock body")
+			return respond(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		}
 	}
 
 	if body.LockedAt.IsZero() {
 		body.LockedAt = time.Now().UTC()
 	}
 
-	hour := body.LockedAt.Hour()
+	hour := body.LockedAt.In(userTZ).Hour()
 	if !isNightHour(hour) {
 		log.Info().Int("hour", hour).Msg("phone-lock outside night window, ignoring")
 		return respond(http.StatusOK, map[string]string{"status": "ignored", "reason": "outside night window"})
