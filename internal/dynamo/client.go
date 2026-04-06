@@ -55,6 +55,31 @@ func (c *Client) PutPhoneLockEvent(ctx context.Context, userID string, lockedAt 
 	return err
 }
 
+func (c *Client) GetLatestPhoneLockEvent(ctx context.Context, userPK string) (*PhoneLockEvent, error) {
+	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: userPK},
+			":prefix": &types.AttributeValueMemberS{Value: "PHONELOCK#"},
+		},
+		ScanIndexForward: aws.Bool(false),
+		Limit:            aws.Int32(1),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query latest phone lock: %w", err)
+	}
+	if len(result.Items) == 0 {
+		return nil, nil
+	}
+
+	var event PhoneLockEvent
+	if err := attributevalue.UnmarshalMap(result.Items[0], &event); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal phone lock event: %w", err)
+	}
+	return &event, nil
+}
+
 type User struct {
 	PK           string    `dynamodbav:"PK"`
 	SK           string    `dynamodbav:"SK"`
@@ -187,6 +212,34 @@ func (c *Client) PutSyncRecord(ctx context.Context, userPK, sk, data string) err
 	})
 
 	return err
+}
+
+// GetLatestSyncRecord queries for the most recent record matching a SK prefix (e.g. "SLEEP#", "RECOVERY#").
+func (c *Client) GetLatestSyncRecord(ctx context.Context, userPK, skPrefix string) (*SyncRecord, error) {
+	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: userPK},
+			":prefix": &types.AttributeValueMemberS{Value: skPrefix},
+		},
+		ScanIndexForward: aws.Bool(false),
+		Limit:            aws.Int32(1),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query latest %s: %w", skPrefix, err)
+	}
+
+	if len(result.Items) == 0 {
+		return nil, nil
+	}
+
+	var record SyncRecord
+	if err := attributevalue.UnmarshalMap(result.Items[0], &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal sync record: %w", err)
+	}
+
+	return &record, nil
 }
 
 func (c *Client) ListUsers(ctx context.Context) ([]User, error) {

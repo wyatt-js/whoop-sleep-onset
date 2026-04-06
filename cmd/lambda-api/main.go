@@ -76,6 +76,8 @@ func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.AP
 		return handlePhoneLock(ctx, req)
 	case method == "POST" && path == "/webhook/whoop":
 		return handleWhoopWebhook(ctx, req)
+	case method == "GET" && path == "/last":
+		return handleLast(ctx, req)
 	default:
 		return respond(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -233,6 +235,68 @@ func handleWhoopWebhook(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 
 	log.Info().Str("type", webhook.Type).Str("id", webhook.ID).Msg("webhook event stored")
 	return respond(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func handleLast(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	userID, err := authenticateRequest(ctx, req)
+	if err != nil {
+		return respond(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+	}
+
+	sleepRec, err := db.GetLatestSyncRecord(ctx, userID, "SLEEP#")
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get latest sleep")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get sleep data"})
+	}
+
+	recoveryRec, err := db.GetLatestSyncRecord(ctx, userID, "RECOVERY#")
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get latest recovery")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get recovery data"})
+	}
+
+	phoneLock, err := db.GetLatestPhoneLockEvent(ctx, userID)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get latest phone lock")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get phone lock data"})
+	}
+
+	result := map[string]any{}
+
+	if phoneLock != nil {
+		result["phone_locked_at"] = phoneLock.LockedAt
+	}
+
+	if sleepRec != nil {
+		var sleep json.RawMessage = []byte(sleepRec.Data)
+		result["sleep"] = sleep
+		result["sleep_synced_at"] = sleepRec.SyncedAt
+
+		// Calculate sleep onset latency if we have both phone lock and sleep start
+		if phoneLock != nil {
+			var sleepData struct {
+				Start time.Time `json:"start"`
+			}
+			if json.Unmarshal([]byte(sleepRec.Data), &sleepData) == nil && !sleepData.Start.IsZero() {
+				onset := sleepData.Start.Sub(phoneLock.LockedAt)
+				if onset >= 0 {
+					result["sleep_onset_minutes"] = onset.Minutes()
+				}
+			}
+		}
+	}
+
+	if recoveryRec != nil {
+		var recovery json.RawMessage = []byte(recoveryRec.Data)
+		result["recovery"] = recovery
+		result["recovery_synced_at"] = recoveryRec.SyncedAt
+	}
+
+	if len(result) == 0 {
+		return respond(http.StatusOK, map[string]string{"status": "no data synced yet"})
+	}
+
+	return respond(http.StatusOK, result)
 }
 
 func authenticateRequest(ctx context.Context, req events.APIGatewayV2HTTPRequest) (string, error) {
