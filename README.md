@@ -26,7 +26,7 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
 
 ```bash
 # Add binary to PATH
-cp bin/sleeponset /usr/localbin/
+cp bin/sleeponset /usr/local/bin/
 
 # Open browser to authenticate with WHOOP
 sleeponset auth
