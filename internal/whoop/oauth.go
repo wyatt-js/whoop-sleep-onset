@@ -44,7 +44,7 @@ func BuildAuthURL(cfg *OAuthConfig, state string) string {
 		"client_id":     {cfg.ClientID},
 		"redirect_uri":  {cfg.RedirectURI},
 		"response_type": {"code"},
-		"scope":         {"read:recovery read:sleep read:profile read:cycles"},
+		"scope":         {"offline read:recovery read:sleep read:profile read:cycles"},
 		"state":         {state},
 	}
 	return authURL + "?" + params.Encode()

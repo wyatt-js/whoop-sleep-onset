@@ -28,9 +28,6 @@ var (
 
 	pendingStates = map[string]time.Time{}
 
-	windowStart = 21
-	windowEnd   = 3
-
 	userTZ *time.Location
 )
 
@@ -198,12 +195,6 @@ func handlePhoneLock(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 		body.LockedAt = time.Now().UTC()
 	}
 
-	hour := body.LockedAt.In(userTZ).Hour()
-	if !isNightHour(hour) {
-		log.Info().Int("hour", hour).Msg("phone-lock outside night window, ignoring")
-		return respond(http.StatusOK, map[string]string{"status": "ignored", "reason": "outside night window"})
-	}
-
 	if err := db.PutPhoneLockEvent(ctx, userID, body.LockedAt); err != nil {
 		log.Error().Err(err).Msg("failed to store phone-lock event")
 		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to store event"})
@@ -352,13 +343,6 @@ func generateBearerToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
-}
-
-func isNightHour(hour int) bool {
-	if windowStart > windowEnd {
-		return hour >= windowStart || hour < windowEnd
-	}
-	return hour >= windowStart && hour < windowEnd
 }
 
 func respond(statusCode int, body any) (events.APIGatewayV2HTTPResponse, error) {
