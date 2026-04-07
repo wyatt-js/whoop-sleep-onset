@@ -32,7 +32,7 @@ type lastResponse struct {
 }
 
 type sleepData struct {
-	ID    int       `json:"id"`
+	ID    string    `json:"id"`
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
 	Nap   bool      `json:"nap"`
@@ -58,8 +58,8 @@ type stageSummary struct {
 }
 
 type recoveryData struct {
-	CycleID    int            `json:"cycle_id"`
-	SleepID    int            `json:"sleep_id"`
+	CycleID    string         `json:"cycle_id"`
+	SleepID    string         `json:"sleep_id"`
 	ScoreState string         `json:"score_state"`
 	Score      *recoveryScore `json:"score"`
 }
