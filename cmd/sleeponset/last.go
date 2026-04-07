@@ -5,11 +5,44 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+var (
+	colorEnabled bool
+
+	reset   = "\033[0m"
+	bold    = "\033[1m"
+	dim     = "\033[2m"
+	cyan    = "\033[36m"
+	green   = "\033[32m"
+	yellow  = "\033[33m"
+	red     = "\033[31m"
+	magenta = "\033[35m"
+	white   = "\033[97m"
+	bgCyan  = "\033[46m"
+	bgGreen = "\033[42m"
+	bgRed   = "\033[41m"
+	bgYellow = "\033[43m"
+	black   = "\033[30m"
+)
+
+func initColors() {
+	colorEnabled = isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
+func c(codes ...string) string {
+	if !colorEnabled {
+		return ""
+	}
+	return strings.Join(codes, "")
+}
 
 var lastCmd = &cobra.Command{
 	Use:   "last",
@@ -73,6 +106,8 @@ type recoveryScore struct {
 }
 
 func runLast(cmd *cobra.Command, args []string) error {
+	initColors()
+
 	token := viper.GetString("token")
 	if token == "" {
 		return fmt.Errorf("not authenticated — run: sleeponset configure --token <token>")
@@ -110,68 +145,127 @@ func runLast(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	fmt.Println()
+
+	// Sleep Onset — the hero number
+	printSleepOnset(data.SleepOnsetMin, data.PhoneLockedAt, data.Sleep)
+
 	if data.PhoneLockedAt != nil {
-		fmt.Printf("Phone Locked: %s\n", data.PhoneLockedAt.Local().Format("3:04pm"))
+		fmt.Printf("  %s%s⏱  Phone Locked%s  %s\n", c(dim), c(cyan), c(reset), data.PhoneLockedAt.Local().Format("3:04pm"))
 	}
 
 	if data.Sleep != nil {
 		printSleep(data.Sleep)
 	}
 
-	if data.SleepOnsetMin != nil {
-		fmt.Printf("\nSleep Onset:  %s\n", formatDuration(time.Duration(*data.SleepOnsetMin*float64(time.Minute))))
-	} else if data.PhoneLockedAt != nil && data.Sleep != nil {
-		fmt.Printf("\nSleep Onset:  (unable to calculate)\n")
-	}
-
 	if data.Recovery != nil {
-		fmt.Println()
 		printRecovery(data.Recovery)
 	}
 
+	fmt.Println()
 	return nil
+}
+
+func printSleepOnset(onset *float64, locked *time.Time, sleep *sleepData) {
+	fmt.Printf("  %s╭─────────────────────────────╮%s\n", c(dim), c(reset))
+
+	if onset != nil {
+		mins := *onset
+		durStr := formatDuration(time.Duration(mins * float64(time.Minute)))
+		bg, fg := onsetColor(mins)
+		fmt.Printf("  %s│%s  SLEEP ONSET  %s%s %s %s  %s%s│%s\n",
+			c(dim), c(reset),
+			c(bold, bg, fg), " ", durStr, " ", c(reset),
+			c(dim), c(reset))
+	} else if locked != nil && sleep != nil {
+		fmt.Printf("  %s│%s  SLEEP ONSET  %s%s unable to calculate %s  %s%s│%s\n",
+			c(dim), c(reset),
+			c(dim), c(yellow), c(reset),
+			c(dim), c(reset), c(reset))
+	} else {
+		fmt.Printf("  %s│%s  SLEEP ONSET  %s%s waiting for data %s     %s%s│%s\n",
+			c(dim), c(reset),
+			c(dim), c(yellow), c(reset),
+			c(dim), c(reset), c(reset))
+	}
+
+	fmt.Printf("  %s╰─────────────────────────────╯%s\n", c(dim), c(reset))
+	fmt.Println()
+}
+
+func onsetColor(mins float64) (string, string) {
+	switch {
+	case mins <= 15:
+		return bgGreen, black
+	case mins <= 30:
+		return bgYellow, black
+	default:
+		return bgRed, white
+	}
 }
 
 func printSleep(s *sleepData) {
 	duration := s.End.Sub(s.Start)
-	fmt.Printf("Sleep  %s → %s (%s)\n",
+	fmt.Printf("\n  %s%s SLEEP %s  %s → %s  %s(%s)%s\n",
+		c(bold), c(cyan), c(reset),
 		s.Start.Local().Format("3:04pm"),
 		s.End.Local().Format("3:04pm"),
-		formatDuration(duration))
+		c(dim), formatDuration(duration), c(reset))
 
 	if s.Score == nil {
-		fmt.Println("  (score pending)")
+		fmt.Printf("  %s(score pending)%s\n", c(dim), c(reset))
 		return
 	}
 
 	sc := s.Score
-	fmt.Printf("  Performance:  %.0f%%\n", sc.SleepPerformance)
-	fmt.Printf("  Efficiency:   %.0f%%\n", sc.SleepEfficiency)
-	fmt.Printf("  Consistency:  %.0f%%\n", sc.SleepConsistency)
-	fmt.Printf("  Respiratory:  %.1f rpm\n", sc.RespiratoryRate)
+	fmt.Printf("  %s├%s Performance  %s\n", c(dim), c(reset), pctBar(sc.SleepPerformance))
+	fmt.Printf("  %s├%s Efficiency   %s\n", c(dim), c(reset), pctBar(sc.SleepEfficiency))
+	fmt.Printf("  %s├%s Consistency  %s\n", c(dim), c(reset), pctBar(sc.SleepConsistency))
+	fmt.Printf("  %s├%s Respiratory  %s%.1f rpm%s\n", c(dim), c(reset), c(white), sc.RespiratoryRate, c(reset))
 
 	st := sc.StageSummary
-	fmt.Printf("  Stages:       REM %s · Deep %s · Light %s · Awake %s\n",
-		formatDuration(time.Duration(st.TotalRemSleepMs)*time.Millisecond),
-		formatDuration(time.Duration(st.TotalSlowWaveSleepMs)*time.Millisecond),
-		formatDuration(time.Duration(st.TotalLightSleepMs)*time.Millisecond),
-		formatDuration(time.Duration(st.TotalAwakeMs)*time.Millisecond))
-	fmt.Printf("  Cycles: %d  Disturbances: %d\n", st.SleepCycleCount, st.DisturbanceCount)
+	fmt.Printf("  %s├%s Stages  %s%sREM%s %s  %s%sDeep%s %s  %s%sLight%s %s  %s%sAwake%s %s\n",
+		c(dim), c(reset),
+		c(magenta), c(bold), c(reset), formatDuration(time.Duration(st.TotalRemSleepMs)*time.Millisecond),
+		c(cyan), c(bold), c(reset), formatDuration(time.Duration(st.TotalSlowWaveSleepMs)*time.Millisecond),
+		c(green), c(bold), c(reset), formatDuration(time.Duration(st.TotalLightSleepMs)*time.Millisecond),
+		c(red), c(bold), c(reset), formatDuration(time.Duration(st.TotalAwakeMs)*time.Millisecond))
+	fmt.Printf("  %s╰%s Cycles %s%d%s  Disturbances %s%d%s\n",
+		c(dim), c(reset),
+		c(white), st.SleepCycleCount, c(reset),
+		c(white), st.DisturbanceCount, c(reset))
 }
 
 func printRecovery(r *recoveryData) {
-	fmt.Println("Recovery")
+	fmt.Printf("\n  %s%s RECOVERY %s", c(bold), c(green), c(reset))
+
 	if r.Score == nil {
-		fmt.Println("  (score pending)")
+		fmt.Printf("  %s(score pending)%s\n", c(dim), c(reset))
 		return
 	}
 
 	sc := r.Score
-	fmt.Printf("  Score:     %.0f%%\n", sc.RecoveryScore)
-	fmt.Printf("  HRV:       %.1f ms\n", sc.HRVRmssd)
-	fmt.Printf("  Resting HR: %.0f bpm\n", sc.RestingHR)
-	fmt.Printf("  SpO2:      %.0f%%\n", sc.SPO2)
-	fmt.Printf("  Skin Temp: %.1f°C\n", sc.SkinTemp)
+	fmt.Printf(" %s\n", pctBar(sc.RecoveryScore))
+	fmt.Printf("  %s├%s HRV          %s%.1f ms%s\n", c(dim), c(reset), c(white), sc.HRVRmssd, c(reset))
+	fmt.Printf("  %s├%s Resting HR   %s%.0f bpm%s\n", c(dim), c(reset), c(white), sc.RestingHR, c(reset))
+	fmt.Printf("  %s├%s SpO2         %s%.0f%%%s\n", c(dim), c(reset), c(white), sc.SPO2, c(reset))
+	fmt.Printf("  %s╰%s Skin Temp    %s%.1f°C%s\n", c(dim), c(reset), c(white), sc.SkinTemp, c(reset))
+}
+
+func pctBar(pct float64) string {
+	width := 16
+	filled := min(int(pct/100*float64(width)), width)
+	filled = max(filled, 0)
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	clr := green
+	switch {
+	case pct < 50:
+		clr = red
+	case pct < 70:
+		clr = yellow
+	}
+	return fmt.Sprintf("%s%s%s %s%.0f%%%s", c(clr), bar, c(reset), c(bold, white), pct, c(reset))
 }
 
 func formatDuration(d time.Duration) string {

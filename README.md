@@ -44,7 +44,7 @@ sleeponset last
 2. Go to **Automation** → **New Automation**
 3. Select **Charger** → **Is Connected**
 4. Toggle **Run Immediately** (no confirmation)
-5. Add action: **If** → Current Time is between 10:00 PM and 3:00 AM
+5. Add action: **If ANY** → Current Time is after 10:00 PM OR Current Time is before 3:00 AM
 6. Add action: **Get Contents of URL**
    - URL: `https://ozls3538ce.execute-api.us-east-1.amazonaws.com/phone-lock`
    - Method: `POST`
