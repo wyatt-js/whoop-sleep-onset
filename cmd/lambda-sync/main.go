@@ -162,7 +162,7 @@ func syncSleep(ctx context.Context, client *whoop.Client, userPK string, start, 
 		}
 		sk := fmt.Sprintf("SLEEP#%s", r.Start.Format(time.RFC3339))
 		if err := db.PutSyncRecord(ctx, userPK, sk, string(data)); err != nil {
-			return fmt.Errorf("failed to store sleep record %d: %w", r.ID, err)
+			return fmt.Errorf("failed to store sleep record %s: %w", r.ID, err)
 		}
 	}
 
@@ -183,7 +183,7 @@ func syncRecovery(ctx context.Context, client *whoop.Client, userPK string, star
 		}
 		sk := fmt.Sprintf("RECOVERY#%s", r.CreatedAt.Format(time.RFC3339))
 		if err := db.PutSyncRecord(ctx, userPK, sk, string(data)); err != nil {
-			return fmt.Errorf("failed to store recovery record %d: %w", r.CycleID, err)
+			return fmt.Errorf("failed to store recovery record %s: %w", r.CycleID, err)
 		}
 	}
 

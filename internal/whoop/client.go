@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const baseURL = "https://api.prod.whoop.com/developer/v1"
+const baseURL = "https://api.prod.whoop.com/developer/v2"
 
 // Client wraps an access token for making authenticated WHOOP API calls.
 type Client struct {
@@ -24,7 +24,7 @@ type PaginatedResponse[T any] struct {
 }
 
 type SleepRecord struct {
-	ID             int        `json:"id"`
+	ID             string     `json:"id"`
 	UserID         int        `json:"user_id"`
 	Start          time.Time  `json:"start"`
 	End            time.Time  `json:"end"`
@@ -59,8 +59,8 @@ type Millis struct {
 }
 
 type RecoveryRecord struct {
-	CycleID    int            `json:"cycle_id"`
-	SleepID    int            `json:"sleep_id"`
+	CycleID    string         `json:"cycle_id"`
+	SleepID    string         `json:"sleep_id"`
 	UserID     int            `json:"user_id"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
@@ -78,7 +78,7 @@ type RecoveryScore struct {
 }
 
 type CycleRecord struct {
-	ID         int          `json:"id"`
+	ID         string       `json:"id"`
 	UserID     int          `json:"user_id"`
 	Start      time.Time    `json:"start"`
 	End        time.Time    `json:"end"`
