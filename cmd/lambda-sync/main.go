@@ -77,6 +77,11 @@ func handler(ctx context.Context, event events.DynamoDBEvent) error {
 			eventType = t.String()
 		}
 
+		resourceID := ""
+		if w, ok := img["whoop_id"]; ok {
+			resourceID = w.String()
+		}
+
 		whoopIDStr := strings.TrimPrefix(pkVal, "WHOOPUSER#")
 		whoopID, err := strconv.Atoi(whoopIDStr)
 		if err != nil {
@@ -108,7 +113,7 @@ func handler(ctx context.Context, event events.DynamoDBEvent) error {
 
 		switch eventType {
 		case "sleep.updated", "sleep.created":
-			if err := syncSleep(ctx, client, user.PK, start, now); err != nil {
+			if err := syncSleep(ctx, client, user.PK, resourceID); err != nil {
 				logger.Error().Err(err).Msg("failed to sync sleep")
 				syncErrors++
 			}
@@ -149,24 +154,22 @@ func ensureValidToken(ctx context.Context, user *dynamo.User) (string, error) {
 	return tokens.AccessToken, nil
 }
 
-func syncSleep(ctx context.Context, client *whoop.Client, userPK string, start, end time.Time) error {
-	records, err := client.GetSleep(ctx, start, end)
+func syncSleep(ctx context.Context, client *whoop.Client, userPK string, sleepID string) error {
+	r, err := client.GetSleepByID(ctx, sleepID)
 	if err != nil {
 		return err
 	}
 
-	for _, r := range records {
-		data, err := json.Marshal(r)
-		if err != nil {
-			return fmt.Errorf("failed to marshal sleep record: %w", err)
-		}
-		sk := fmt.Sprintf("SLEEP#%s", r.Start.Format(time.RFC3339))
-		if err := db.PutSyncRecord(ctx, userPK, sk, string(data)); err != nil {
-			return fmt.Errorf("failed to store sleep record %d: %w", r.ID, err)
-		}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("failed to marshal sleep record: %w", err)
+	}
+	sk := fmt.Sprintf("SLEEP#%s", r.Start.Format(time.RFC3339))
+	if err := db.PutSyncRecord(ctx, userPK, sk, string(data)); err != nil {
+		return fmt.Errorf("failed to store sleep record %d: %w", r.ID, err)
 	}
 
-	log.Info().Str("user", userPK).Int("count", len(records)).Msg("synced sleep")
+	log.Info().Str("user", userPK).Int("sleep_id", r.ID).Msg("synced sleep")
 	return nil
 }
 
