@@ -97,32 +97,6 @@ func (c *Client) GetSleep(ctx context.Context, start, end time.Time) ([]SleepRec
 	return fetchAll[SleepRecord](ctx, c, "/activity/sleep", start, end)
 }
 
-func (c *Client) GetSleepByID(ctx context.Context, sleepID string) (*SleepRecord, error) {
-	reqURL := baseURL + "/activity/sleep/" + sleepID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get sleep %s returned status %d: %s", sleepID, resp.StatusCode, string(body))
-	}
-
-	var record SleepRecord
-	if err := json.NewDecoder(resp.Body).Decode(&record); err != nil {
-		return nil, fmt.Errorf("failed to decode sleep response: %w", err)
-	}
-
-	return &record, nil
-}
 
 func (c *Client) GetRecovery(ctx context.Context, start, end time.Time) ([]RecoveryRecord, error) {
 	return fetchAll[RecoveryRecord](ctx, c, "/recovery", start, end)
