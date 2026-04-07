@@ -25,11 +25,8 @@ WHOOP does not track sleep onset latency and when you attempt to fall asleep. It
 ## CLI Usage
 
 ```bash
-# Add $GOPATH/bin to PATH
-export PATH=$PATH:$(go env GOPATH)/bin 
-
-# Install globally
-go install ./cmd/sleeponset
+# Add binary to PATH
+cp bin/sleeponset /usr/localbin/
 
 # Open browser to authenticate with WHOOP
 sleeponset auth
@@ -64,12 +61,6 @@ sleeponset last
 | Compute          | AWS Lambda                        |
 | API              | AWS API Gateway                   |
 | AI Insights      | Claude Sonnet (Anthropic API)     |
-
-## Data Model
-
-```sql
-TODO
-```
 
 ## Concurrency Model
 
