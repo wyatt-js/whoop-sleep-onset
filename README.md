@@ -1,26 +1,26 @@
 # Whoop Sleep Onset
 
-A  Go CLI that measures sleep onset latency by combining iOS Shortcut phone-lock detection with WHOOP biometric data. Computes correlations between how long it takes you to fall asleep and next-day recovery, HRV, strain, and other metrics.
+A  Go CLI that measures sleep onset latency by combining iOS Shortcut phone-lock detection with WHOOP biometric data. Computes correlations between how long it takes you to fall asleep and next-day recovery, strain, and consistency.
 
 ## Why
 
 WHOOP does not track sleep onset latency and when you attempt to fall asleep. It only tracks "sleep start time" in their app and exposes it via the developer API. This tool derives the metric independently via a timestamp when you put down your phone at night (via iOS Shortcut) minus WHOOP's detected sleep start and then layers correlation and Claude AI analysis.
 
-## How It Works (WIP)
+## How It Works
 
-1. **Phone-Down Detection** — An iOS Shortcut automation triggers when the iPhone connects to a charger during night hours (10pm–3am). It sends an HTTP POST with a timestamp to the API Gateway endpoint hosted with Amazon Web Services. Duplicate events (e.g., unplugging and re-plugging) are deduplicated server-side by taking the last event before WHOOP's detected sleep start.
+1. **Phone-Down Detection** — An iOS Shortcut automation triggers when the iPhone connects to a charger during night hours (10pm–3am). It sends an HTTP POST with a timestamp to the API Gateway endpoint hosted with Amazon Web Services.
 
 2. **WHOOP Data Ingestion** — After a WHOOP webhook event, a Lambda pulls sleep, recovery, and strain data from the WHOOP API.
 
 3. **Sleep Onset Derivation** — The system computes the delta between the phone-lock timestamp and WHOOP's sleep start time. This is your sleep onset latency.
 
-4. **Correlation Engine** — Goroutines fan out to concurrently compute correlations across metrics:
+4. **Correlation Engine** — Goroutines fan out to concurrently compute correlations and visuals across metrics:
    - Sleep onset latency → next-day recovery score
-   - Sleep onset latency → HRV (RMSSD)
+   - Sleep onset latency → next-day consistency score
    - Previous day strain → onset latency
-   - Onset latency trends over 7/14/30 day rolling windows
+   - Onset latency trends over a 4 day window (WHOOP's window for calculating consistency)
 
-5. **AI Insights** - Raw correlation data and trends are passed to Claude Sonnet to generate recommendations
+5. **AI Insights** - Correlation data and trends are passed to Claude Sonnet to generate recommendations
 
 ## CLI Usage
 
@@ -37,6 +37,7 @@ sleeponset configure --token <your-token>
 # After a night of sleep
 sleeponset last
 ```
+<img width="411" height="218" alt="Screenshot 2026-04-09 at 11 25 43" src="https://github.com/user-attachments/assets/86509b5f-5caa-4981-9f01-e7da7862f70b" />
 
 ## iOS Shortcut Setup
 
@@ -50,31 +51,33 @@ sleeponset last
    - Method: `POST`
    - Headers: `Authorization: Bearer <your-token>`
 
-## Tech Stack (WIP)
+## Tech Stack
 
 | Layer            | Technology                        |
 |------------------|-----------------------------------|
 | Language         | Go                                |
 | CLI Framework    | Cobra + Viper                     |
 | Database         | AWS DynamoDB                      |
-| Storage          | AWS S3                            |
-| Compute          | AWS Lambda                        |
+| Compute          | AWS Lambda (2x)                   |
 | API              | AWS API Gateway                   |
 | AI Insights      | Claude Sonnet (Anthropic API)     |
-
-## Concurrency Model
-
-```
-TODO
-```
 
 ## Project Structure
 
 ```
+├── bin/
+│   ├── api/                  # Cobra CLI (sleeponset)
+│   │   ├── bootstrap         # Lambda binary for api routes
+│   └── sync/
+│   │   ├── bootstrap         # Lambda binary for WHOOP data syncing
+│   └── sleeponset            # CLI Binary
 ├── cmd/
 │   ├── cli/                  # Cobra CLI (sleeponset)
 │   │   ├── main.go           # Root command and Viper config
 │   │   ├── auth.go           # `auth` command — opens browser for WHOOP OAuth
+│   │   ├── correlate.go      # Generate correlations and visuals across metrics
+│   │   ├── insights.go       # Generate AI insights with the Anthropic API
+│   │   ├── last.go           # `last` command — displays last night's sleep results
 │   │   └── configure.go      # `configure` command — saves token/api-url
 │   └── lambda-api/
 │       └── main.go           # API Gateway Lambda handler (auth, phone-lock, webhooks)
@@ -82,13 +85,10 @@ TODO
 │   ├── dynamo/
 │   │   └── client.go         # DynamoDB client — users and phone-lock events
 │   └── whoop/
+│       ├── client.go         # WHOOP sleep/recovery fetching
 │       ├── oauth.go          # WHOOP OAuth2 flow (state, token exchange)
 │       └── profile.go        # WHOOP profile API
 ├── Makefile
 ├── go.mod
 └── go.sum
 ```
-
-## License
-
-MIT
