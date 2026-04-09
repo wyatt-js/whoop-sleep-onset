@@ -43,7 +43,6 @@ sleeponset correlate
 # Ask claude for recommendations
 sleeponset insights
 ```
-<img width="411" height="218" alt="Screenshot 2026-04-09 at 11 25 43" src="https://github.com/user-attachments/assets/86509b5f-5caa-4981-9f01-e7da7862f70b" />
 
 ## iOS Shortcut Setup
 
