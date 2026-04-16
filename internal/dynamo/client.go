@@ -214,6 +214,54 @@ func (c *Client) PutSyncRecord(ctx context.Context, userPK, sk, data string) err
 	return err
 }
 
+// GetRecentSyncRecords queries for the N most recent records matching a SK prefix (e.g. "SLEEP#", "RECOVERY#").
+func (c *Client) GetRecentSyncRecords(ctx context.Context, userPK, skPrefix string, limit int) ([]SyncRecord, error) {
+	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: userPK},
+			":prefix": &types.AttributeValueMemberS{Value: skPrefix},
+		},
+		ScanIndexForward: aws.Bool(false),
+		Limit:            aws.Int32(int32(limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query recent %s: %w", skPrefix, err)
+	}
+
+	var records []SyncRecord
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &records); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal sync records: %w", err)
+	}
+
+	return records, nil
+}
+
+// GetRecentPhoneLockEvents queries for the N most recent phone lock events.
+func (c *Client) GetRecentPhoneLockEvents(ctx context.Context, userPK string, limit int) ([]PhoneLockEvent, error) {
+	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":     &types.AttributeValueMemberS{Value: userPK},
+			":prefix": &types.AttributeValueMemberS{Value: "PHONELOCK#"},
+		},
+		ScanIndexForward: aws.Bool(false),
+		Limit:            aws.Int32(int32(limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query recent phone locks: %w", err)
+	}
+
+	var events []PhoneLockEvent
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &events); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal phone lock events: %w", err)
+	}
+
+	return events, nil
+}
+
 // GetLatestSyncRecord queries for the most recent record matching a SK prefix (e.g. "SLEEP#", "RECOVERY#").
 func (c *Client) GetLatestSyncRecord(ctx context.Context, userPK, skPrefix string) (*SyncRecord, error) {
 	result, err := c.db.Query(ctx, &dynamodb.QueryInput{

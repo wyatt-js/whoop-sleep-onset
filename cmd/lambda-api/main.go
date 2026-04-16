@@ -75,6 +75,8 @@ func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.AP
 		return handleWhoopWebhook(ctx, req)
 	case method == "GET" && path == "/last":
 		return handleLast(ctx, req)
+	case method == "GET" && path == "/insights":
+		return handleInsights(ctx, req)
 	default:
 		return respond(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -288,6 +290,176 @@ func handleLast(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events
 	}
 
 	return respond(http.StatusOK, result)
+}
+
+func handleInsights(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	userID, err := authenticateRequest(ctx, req)
+	if err != nil {
+		return respond(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+	}
+
+	sleepRecords, err := db.GetRecentSyncRecords(ctx, userID, "SLEEP#", 7)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get recent sleep")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get sleep data"})
+	}
+
+	recoveryRecords, err := db.GetRecentSyncRecords(ctx, userID, "RECOVERY#", 7)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get recent recovery")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get recovery data"})
+	}
+
+	phoneLocks, err := db.GetRecentPhoneLockEvents(ctx, userID, 7)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get recent phone locks")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get phone lock data"})
+	}
+
+	if len(sleepRecords) == 0 {
+		return respond(http.StatusOK, map[string]string{"status": "no sleep data available for insights"})
+	}
+
+	prompt := buildInsightsPrompt(sleepRecords, recoveryRecords, phoneLocks)
+
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		log.Error().Msg("ANTHROPIC_API_KEY not set")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "insights not configured"})
+	}
+
+	insight, err := callClaude(ctx, apiKey, prompt)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to call Claude API")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to generate insights"})
+	}
+
+	return respond(http.StatusOK, map[string]string{"insights": insight})
+}
+
+func buildInsightsPrompt(sleeps []dynamo.SyncRecord, recoveries []dynamo.SyncRecord, phoneLocks []dynamo.PhoneLockEvent) string {
+	var b strings.Builder
+
+	b.WriteString("You are a sleep health analyst. Analyze the following sleep data and provide actionable insights.\n\n")
+
+	b.WriteString("## Sleep Records (most recent first)\n")
+	for _, s := range sleeps {
+		b.WriteString(s.Data)
+		b.WriteString("\n")
+	}
+
+	if len(recoveries) > 0 {
+		b.WriteString("\n## Recovery Records (most recent first)\n")
+		for _, r := range recoveries {
+			b.WriteString(r.Data)
+			b.WriteString("\n")
+		}
+	}
+
+	if len(phoneLocks) > 0 {
+		b.WriteString("\n## Phone Lock Times (proxy for bedtime intent, most recent first)\n")
+		for _, p := range phoneLocks {
+			b.WriteString(p.LockedAt.In(userTZ).Format("Mon Jan 2 3:04pm"))
+			b.WriteString("\n")
+		}
+
+		// Calculate sleep onset latencies where possible
+		if len(sleeps) > 0 {
+			b.WriteString("\n## Sleep Onset Latencies\n")
+			for i, p := range phoneLocks {
+				if i >= len(sleeps) {
+					break
+				}
+				var sleepStart struct {
+					Start time.Time `json:"start"`
+				}
+				if json.Unmarshal([]byte(sleeps[i].Data), &sleepStart) == nil && !sleepStart.Start.IsZero() {
+					onset := sleepStart.Start.Sub(p.LockedAt)
+					if onset >= 0 {
+						b.WriteString(fmt.Sprintf("- %s: %.0f minutes\n", p.LockedAt.In(userTZ).Format("Mon Jan 2"), onset.Minutes()))
+					}
+				}
+			}
+		}
+	}
+
+	b.WriteString("\nProvide a concise analysis covering:\n")
+	b.WriteString("1. Sleep onset latency trends and what they suggest\n")
+	b.WriteString("2. Sleep quality patterns (stages, efficiency, consistency)\n")
+	b.WriteString("3. Recovery trends and correlations with sleep\n")
+	b.WriteString("4. 2-3 specific, actionable recommendations to improve sleep\n")
+	b.WriteString("\nKeep the response under 300 words. Be direct and specific, not generic.")
+
+	return b.String()
+}
+
+type claudeRequest struct {
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	Messages  []claudeMessage `json:"messages"`
+}
+
+type claudeMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type claudeResponse struct {
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func callClaude(ctx context.Context, apiKey, prompt string) (string, error) {
+	reqBody := claudeRequest{
+		Model:     "claude-sonnet-4-5-20250514",
+		MaxTokens: 1024,
+		Messages: []claudeMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(string(body)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var claudeResp claudeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&claudeResp); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		errMsg := "unknown error"
+		if claudeResp.Error != nil {
+			errMsg = claudeResp.Error.Message
+		}
+		return "", fmt.Errorf("claude API error (%d): %s", resp.StatusCode, errMsg)
+	}
+
+	if len(claudeResp.Content) == 0 {
+		return "", fmt.Errorf("empty response from Claude")
+	}
+
+	return claudeResp.Content[0].Text, nil
 }
 
 func authenticateRequest(ctx context.Context, req events.APIGatewayV2HTTPRequest) (string, error) {
