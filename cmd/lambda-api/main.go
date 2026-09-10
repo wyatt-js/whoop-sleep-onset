@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -18,20 +20,28 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/wyattjs/whoop-sleep-onset/internal/analysis"
 	"github.com/wyattjs/whoop-sleep-onset/internal/dynamo"
 	"github.com/wyattjs/whoop-sleep-onset/internal/whoop"
 )
 
 var (
-	db       *dynamo.Client
+	db       apiStore
 	oauthCfg *whoop.OAuthConfig
-
-	pendingStates = map[string]time.Time{}
 
 	userTZ *time.Location
 )
 
-func init() {
+type apiStore interface {
+	GetUserByBearerToken(context.Context, string) (*dynamo.User, error)
+	PutUser(context.Context, *dynamo.User) error
+	PutPhoneLockEvent(context.Context, string, time.Time) error
+	PutWebhookEvent(context.Context, int, string, string, string) error
+	GetRecentSyncRecords(context.Context, string, string, int) ([]dynamo.SyncRecord, error)
+	GetRecentPhoneLockEvents(context.Context, string, int) ([]dynamo.PhoneLockEvent, error)
+}
+
+func initialize() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 
@@ -75,8 +85,6 @@ func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.AP
 		return handleWhoopWebhook(ctx, req)
 	case method == "GET" && path == "/last":
 		return handleLast(ctx, req)
-	case method == "GET" && path == "/insights":
-		return handleInsights(ctx, req)
 	default:
 		return respond(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -89,7 +97,7 @@ func handleAuthStart(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to generate state"})
 	}
 
-	pendingStates[state] = time.Now().Add(10 * time.Minute)
+	state = signedState(state, oauthCfg.ClientSecret, time.Now())
 
 	authURL := whoop.BuildAuthURL(oauthCfg, state)
 
@@ -97,6 +105,7 @@ func handleAuthStart(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 
 	return events.APIGatewayV2HTTPResponse{
 		StatusCode: http.StatusFound,
+		Cookies:    []string{stateCookie(state, 600)},
 		Headers: map[string]string{
 			"Location": authURL,
 		},
@@ -107,17 +116,14 @@ func handleAuthCallback(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 	if errParam := req.QueryStringParameters["error"]; errParam != "" {
 		log.Error().Str("error", errParam).Msg("oauth error from WHOOP")
 		return respondHTML(http.StatusBadRequest, fmt.Sprintf(
-			"<h1>Authentication Failed</h1><p>WHOOP returned an error: %s</p>", errParam,
+			"<h1>Authentication Failed</h1><p>WHOOP returned an error: %s</p>", html.EscapeString(errParam),
 		))
 	}
 
 	state := req.QueryStringParameters["state"]
-	expiry, exists := pendingStates[state]
-	if !exists || time.Now().After(expiry) {
-		delete(pendingStates, state)
+	if !validState(req, state, oauthCfg.ClientSecret, time.Now()) {
 		return respondHTML(http.StatusBadRequest, "<h1>Authentication Failed</h1><p>Invalid or expired state.</p>")
 	}
-	delete(pendingStates, state)
 
 	code := req.QueryStringParameters["code"]
 	if code == "" {
@@ -171,9 +177,12 @@ func handleAuthCallback(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 			<p style="margin-top: 24px; color: #666;">You can close this tab.</p>
 		</body>
 		</html>
-	`, profile.FirstName, bearerToken, bearerToken)
+	`, html.EscapeString(profile.FirstName), bearerToken, bearerToken)
 
-	return respondHTML(http.StatusOK, html)
+	resp, err := respondHTML(http.StatusOK, html)
+	resp.Cookies = []string{stateCookie("", -1)}
+	resp.Headers["Cache-Control"] = "no-store"
+	return resp, err
 }
 
 func handlePhoneLock(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -186,8 +195,12 @@ func handlePhoneLock(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 		LockedAt time.Time `json:"locked_at"`
 	}
 
-	if req.Body != "" {
-		if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+	raw, err := requestBody(req)
+	if err != nil {
+		return respond(http.StatusBadRequest, map[string]string{"error": "invalid body encoding"})
+	}
+	if len(raw) != 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			log.Error().Err(err).Msg("failed to parse phone-lock body")
 			return respond(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		}
@@ -197,6 +210,10 @@ func handlePhoneLock(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 		body.LockedAt = time.Now().UTC()
 	}
 
+	if err := validatePhoneTime(body.LockedAt, time.Now()); err != nil {
+		return respond(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	body.LockedAt = body.LockedAt.UTC()
 	if err := db.PutPhoneLockEvent(ctx, userID, body.LockedAt); err != nil {
 		log.Error().Err(err).Msg("failed to store phone-lock event")
 		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to store event"})
@@ -207,6 +224,13 @@ func handlePhoneLock(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 }
 
 func handleWhoopWebhook(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	raw, err := requestBody(req)
+	if err != nil {
+		return respond(http.StatusBadRequest, map[string]string{"error": "invalid body encoding"})
+	}
+	if !validWebhook(req, raw, oauthCfg.ClientSecret) {
+		return respond(http.StatusUnauthorized, map[string]string{"error": "invalid webhook signature"})
+	}
 	var webhook struct {
 		UserID  int    `json:"user_id"`
 		ID      string `json:"id"`
@@ -214,12 +238,19 @@ func handleWhoopWebhook(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 		TraceID string `json:"trace_id"`
 	}
 
-	if err := json.Unmarshal([]byte(req.Body), &webhook); err != nil {
+	if err := json.Unmarshal(raw, &webhook); err != nil {
 		log.Error().Err(err).Msg("failed to parse webhook body")
 		return respond(http.StatusBadRequest, map[string]string{"error": "invalid webhook body"})
 	}
 
-	log.Info().Str("type", webhook.Type).Str("id", webhook.ID).Msg("whoop webhook received")
+	if webhook.UserID <= 0 || webhook.ID == "" || webhook.TraceID == "" {
+		return respond(http.StatusBadRequest, map[string]string{"error": "missing webhook fields"})
+	}
+	switch webhook.Type {
+	case "sleep.updated", "sleep.deleted", "recovery.updated", "recovery.deleted":
+	default:
+		return respond(http.StatusOK, map[string]string{"status": "ignored"})
+	}
 
 	if err := db.PutWebhookEvent(ctx, webhook.UserID, webhook.Type, webhook.ID, webhook.TraceID); err != nil {
 		log.Error().Err(err).Msg("failed to store webhook event")
@@ -236,230 +267,35 @@ func handleLast(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events
 		return respond(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 	}
 
-	sleepRec, err := db.GetLatestSyncRecord(ctx, userID, "SLEEP#")
+	nights, err := loadNights(ctx, userID)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to get latest sleep")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get sleep data"})
+		log.Error().Err(err).Msg("failed to load nights")
+		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to load sleep data"})
 	}
-
-	recoveryRec, err := db.GetLatestSyncRecord(ctx, userID, "RECOVERY#")
-	if err != nil {
-		log.Error().Err(err).Msg("failed to get latest recovery")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get recovery data"})
+	if len(nights) == 0 {
+		return respond(http.StatusOK, map[string]string{"status": "no completed main sleep synced yet"})
 	}
-
-	phoneLock, err := db.GetLatestPhoneLockEvent(ctx, userID)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to get latest phone lock")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get phone lock data"})
+	latest := nights[0]
+	if len(analysis.Recent(nights[:1], time.Now(), userTZ, 1)) == 0 {
+		latest.Status = "showing latest recorded sleep; no completed sleep synced for today. " + latest.Status
 	}
-
-	result := map[string]any{}
-
-	if phoneLock != nil {
-		result["phone_locked_at"] = phoneLock.LockedAt
-	}
-
-	if sleepRec != nil {
-		var sleep json.RawMessage = []byte(sleepRec.Data)
-		result["sleep"] = sleep
-		result["sleep_synced_at"] = sleepRec.SyncedAt
-
-		// Calculate sleep onset latency if we have both phone lock and sleep start
-		if phoneLock != nil {
-			var sleepData struct {
-				Start time.Time `json:"start"`
-			}
-			if json.Unmarshal([]byte(sleepRec.Data), &sleepData) == nil && !sleepData.Start.IsZero() {
-				onset := sleepData.Start.Sub(phoneLock.LockedAt)
-				if onset >= 0 {
-					result["sleep_onset_minutes"] = onset.Minutes()
-				}
-			}
-		}
-	}
-
-	if recoveryRec != nil {
-		var recovery json.RawMessage = []byte(recoveryRec.Data)
-		result["recovery"] = recovery
-		result["recovery_synced_at"] = recoveryRec.SyncedAt
-	}
-
-	if len(result) == 0 {
-		return respond(http.StatusOK, map[string]string{"status": "no data synced yet"})
-	}
-
-	return respond(http.StatusOK, result)
+	return respond(http.StatusOK, latest)
 }
 
-func handleInsights(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
-	userID, err := authenticateRequest(ctx, req)
+func loadNights(ctx context.Context, userID string) ([]analysis.Night, error) {
+	sleeps, err := db.GetRecentSyncRecords(ctx, userID, "SLEEP#", 0)
 	if err != nil {
-		return respond(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return nil, err
 	}
-
-	sleepRecords, err := db.GetRecentSyncRecords(ctx, userID, "SLEEP#", 7)
+	recoveries, err := db.GetRecentSyncRecords(ctx, userID, "RECOVERY#", 0)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to get recent sleep")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get sleep data"})
+		return nil, err
 	}
-
-	recoveryRecords, err := db.GetRecentSyncRecords(ctx, userID, "RECOVERY#", 7)
+	locks, err := db.GetRecentPhoneLockEvents(ctx, userID, 0)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to get recent recovery")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get recovery data"})
+		return nil, err
 	}
-
-	phoneLocks, err := db.GetRecentPhoneLockEvents(ctx, userID, 7)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to get recent phone locks")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to get phone lock data"})
-	}
-
-	if len(sleepRecords) == 0 {
-		return respond(http.StatusOK, map[string]string{"status": "no sleep data available for insights"})
-	}
-
-	prompt := buildInsightsPrompt(sleepRecords, recoveryRecords, phoneLocks)
-
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		log.Error().Msg("ANTHROPIC_API_KEY not set")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "insights not configured"})
-	}
-
-	insight, err := callClaude(ctx, apiKey, prompt)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to call Claude API")
-		return respond(http.StatusInternalServerError, map[string]string{"error": "failed to generate insights"})
-	}
-
-	return respond(http.StatusOK, map[string]string{"insights": insight})
-}
-
-func buildInsightsPrompt(sleeps []dynamo.SyncRecord, recoveries []dynamo.SyncRecord, phoneLocks []dynamo.PhoneLockEvent) string {
-	var b strings.Builder
-
-	b.WriteString("You are a sleep health analyst. Analyze the following sleep data and provide actionable insights.\n\n")
-
-	b.WriteString("## Sleep Records (most recent first)\n")
-	for _, s := range sleeps {
-		b.WriteString(s.Data)
-		b.WriteString("\n")
-	}
-
-	if len(recoveries) > 0 {
-		b.WriteString("\n## Recovery Records (most recent first)\n")
-		for _, r := range recoveries {
-			b.WriteString(r.Data)
-			b.WriteString("\n")
-		}
-	}
-
-	if len(phoneLocks) > 0 {
-		b.WriteString("\n## Phone Lock Times (proxy for bedtime intent, most recent first)\n")
-		for _, p := range phoneLocks {
-			b.WriteString(p.LockedAt.In(userTZ).Format("Mon Jan 2 3:04pm"))
-			b.WriteString("\n")
-		}
-
-		// Calculate sleep onset latencies where possible
-		if len(sleeps) > 0 {
-			b.WriteString("\n## Sleep Onset Latencies\n")
-			for i, p := range phoneLocks {
-				if i >= len(sleeps) {
-					break
-				}
-				var sleepStart struct {
-					Start time.Time `json:"start"`
-				}
-				if json.Unmarshal([]byte(sleeps[i].Data), &sleepStart) == nil && !sleepStart.Start.IsZero() {
-					onset := sleepStart.Start.Sub(p.LockedAt)
-					if onset >= 0 {
-						b.WriteString(fmt.Sprintf("- %s: %.0f minutes\n", p.LockedAt.In(userTZ).Format("Mon Jan 2"), onset.Minutes()))
-					}
-				}
-			}
-		}
-	}
-
-	b.WriteString("\nProvide a concise analysis covering:\n")
-	b.WriteString("1. Sleep onset latency trends and what they suggest\n")
-	b.WriteString("2. Sleep quality patterns (stages, efficiency, consistency)\n")
-	b.WriteString("3. Recovery trends and correlations with sleep\n")
-	b.WriteString("4. 2-3 specific, actionable recommendations to improve sleep\n")
-	b.WriteString("\nKeep the response under 300 words. Be direct and specific, not generic.")
-
-	return b.String()
-}
-
-type claudeRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	Messages  []claudeMessage `json:"messages"`
-}
-
-type claudeMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type claudeResponse struct {
-	Content []struct {
-		Text string `json:"text"`
-	} `json:"content"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-func callClaude(ctx context.Context, apiKey, prompt string) (string, error) {
-	reqBody := claudeRequest{
-		Model:     "claude-sonnet-4-5-20250514",
-		MaxTokens: 1024,
-		Messages: []claudeMessage{
-			{Role: "user", Content: prompt},
-		},
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(string(body)))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var claudeResp claudeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&claudeResp); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		errMsg := "unknown error"
-		if claudeResp.Error != nil {
-			errMsg = claudeResp.Error.Message
-		}
-		return "", fmt.Errorf("claude API error (%d): %s", resp.StatusCode, errMsg)
-	}
-
-	if len(claudeResp.Content) == 0 {
-		return "", fmt.Errorf("empty response from Claude")
-	}
-
-	return claudeResp.Content[0].Text, nil
+	return analysis.Nights(sleeps, recoveries, locks, time.Now())
 }
 
 func authenticateRequest(ctx context.Context, req events.APIGatewayV2HTTPRequest) (string, error) {
@@ -468,8 +304,8 @@ func authenticateRequest(ctx context.Context, req events.APIGatewayV2HTTPRequest
 		auth = req.Headers["Authorization"]
 	}
 
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == "" {
+	scheme, token, ok := strings.Cut(auth, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
 		return "", fmt.Errorf("missing token")
 	}
 
@@ -497,11 +333,17 @@ func loadOAuthConfig(ctx context.Context) (*whoop.OAuthConfig, error) {
 		return nil, fmt.Errorf("failed to get secret: %w", err)
 	}
 
+	if result.SecretString == nil {
+		return nil, fmt.Errorf("secret must contain a JSON string")
+	}
 	var secrets map[string]string
 	if err := json.Unmarshal([]byte(*result.SecretString), &secrets); err != nil {
 		return nil, fmt.Errorf("failed to parse secret: %w", err)
 	}
 
+	if secrets["WHOOP_CLIENT_ID"] == "" || secrets["WHOOP_CLIENT_SECRET"] == "" {
+		return nil, fmt.Errorf("WHOOP client credentials are missing from secret")
+	}
 	return &whoop.OAuthConfig{
 		ClientID:     secrets["WHOOP_CLIENT_ID"],
 		ClientSecret: secrets["WHOOP_CLIENT_SECRET"],
@@ -542,5 +384,6 @@ func respondHTML(statusCode int, html string) (events.APIGatewayV2HTTPResponse, 
 }
 
 func main() {
+	initialize()
 	lambda.Start(handler)
 }

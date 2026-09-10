@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,30 +15,34 @@ const baseURL = "https://api.prod.whoop.com/developer/v2"
 // Client wraps an access token for making authenticated WHOOP API calls.
 type Client struct {
 	AccessToken string
+	HTTPClient  *http.Client
+	BaseURL     string
 }
 
 type PaginatedResponse[T any] struct {
-	Records       []T    `json:"records"`
-	NextToken     string `json:"next_token"`
+	Records   []T    `json:"records"`
+	NextToken string `json:"next_token"`
 }
 
 type SleepRecord struct {
-	ID             string     `json:"id"`
-	UserID         int        `json:"user_id"`
-	Start          time.Time  `json:"start"`
-	End            time.Time  `json:"end"`
-	Nap            bool       `json:"nap"`
-	ScoreState     string     `json:"score_state"`
+	ID             string      `json:"id"`
+	CycleID        int64       `json:"cycle_id"`
+	TimezoneOffset string      `json:"timezone_offset"`
+	UserID         int         `json:"user_id"`
+	Start          time.Time   `json:"start"`
+	End            time.Time   `json:"end"`
+	Nap            bool        `json:"nap"`
+	ScoreState     string      `json:"score_state"`
 	Score          *SleepScore `json:"score"`
 }
 
 type SleepScore struct {
-	StageSummary        StageSummary `json:"stage_summary"`
-	SleepNeeded         Millis       `json:"sleep_needed"`
-	RespiratoryRate     float64      `json:"respiratory_rate"`
-	SleepPerformance    float64      `json:"sleep_performance_percentage"`
-	SleepConsistency    float64      `json:"sleep_consistency_percentage"`
-	SleepEfficiency     float64      `json:"sleep_efficiency_percentage"`
+	StageSummary     StageSummary `json:"stage_summary"`
+	SleepNeeded      Millis       `json:"sleep_needed"`
+	RespiratoryRate  float64      `json:"respiratory_rate"`
+	SleepPerformance float64      `json:"sleep_performance_percentage"`
+	SleepConsistency *float64     `json:"sleep_consistency_percentage"`
+	SleepEfficiency  float64      `json:"sleep_efficiency_percentage"`
 }
 
 type StageSummary struct {
@@ -55,11 +58,13 @@ type StageSummary struct {
 
 type Millis struct {
 	BaselineMs int `json:"baseline_milli"`
-	NeedMs     int `json:"need_milli"`
+	DebtMs     int `json:"need_from_sleep_debt_milli"`
+	StrainMs   int `json:"need_from_recent_strain_milli"`
+	NapMs      int `json:"need_from_recent_nap_milli"`
 }
 
 type RecoveryRecord struct {
-	CycleID    string         `json:"cycle_id"`
+	CycleID    int64          `json:"cycle_id"`
 	SleepID    string         `json:"sleep_id"`
 	UserID     int            `json:"user_id"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -69,34 +74,33 @@ type RecoveryRecord struct {
 }
 
 type RecoveryScore struct {
-	UserCalibrating bool    `json:"user_calibrating"`
-	RecoveryScore   float64 `json:"recovery_score"`
-	RestingHR       float64 `json:"resting_heart_rate"`
-	HRVRmssd        float64 `json:"hrv_rmssd_milli"`
-	SPO2            float64 `json:"spo2_percentage"`
-	SkinTemp        float64 `json:"skin_temp_celsius"`
+	UserCalibrating bool     `json:"user_calibrating"`
+	RecoveryScore   float64  `json:"recovery_score"`
+	RestingHR       float64  `json:"resting_heart_rate"`
+	HRVRmssd        float64  `json:"hrv_rmssd_milli"`
+	SPO2            *float64 `json:"spo2_percentage"`
+	SkinTemp        *float64 `json:"skin_temp_celsius"`
 }
 
 type CycleRecord struct {
-	ID         string       `json:"id"`
-	UserID     int          `json:"user_id"`
-	Start      time.Time    `json:"start"`
-	End        time.Time    `json:"end"`
-	ScoreState string       `json:"score_state"`
-	Score      *CycleScore  `json:"score"`
+	ID         int64       `json:"id"`
+	UserID     int         `json:"user_id"`
+	Start      time.Time   `json:"start"`
+	End        time.Time   `json:"end"`
+	ScoreState string      `json:"score_state"`
+	Score      *CycleScore `json:"score"`
 }
 
 type CycleScore struct {
-	Strain     float64 `json:"strain"`
-	Kilojoule  float64 `json:"kilojoule"`
-	AvgHR      float64 `json:"average_heart_rate"`
-	MaxHR      float64 `json:"max_heart_rate"`
+	Strain    float64 `json:"strain"`
+	Kilojoule float64 `json:"kilojoule"`
+	AvgHR     float64 `json:"average_heart_rate"`
+	MaxHR     float64 `json:"max_heart_rate"`
 }
 
 func (c *Client) GetSleep(ctx context.Context, start, end time.Time) ([]SleepRecord, error) {
 	return fetchAll[SleepRecord](ctx, c, "/activity/sleep", start, end)
 }
-
 
 func (c *Client) GetRecovery(ctx context.Context, start, end time.Time) ([]RecoveryRecord, error) {
 	return fetchAll[RecoveryRecord](ctx, c, "/recovery", start, end)
@@ -106,51 +110,78 @@ func (c *Client) GetCycles(ctx context.Context, start, end time.Time) ([]CycleRe
 	return fetchAll[CycleRecord](ctx, c, "/cycle", start, end)
 }
 
+var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+func (c *Client) get(ctx context.Context, path string, target any) error {
+	base := c.BaseURL
+	if base == "" {
+		base = baseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+	client := c.HTTPClient
+	if client == nil {
+		client = defaultHTTPClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("WHOOP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return &HTTPError{StatusCode: resp.StatusCode}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("decode WHOOP response: %w", err)
+	}
+	return nil
+}
+
+type HTTPError struct{ StatusCode int }
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("WHOOP returned status %d", e.StatusCode) }
+
+func (c *Client) GetSleepByID(ctx context.Context, id string) (*SleepRecord, error) {
+	var r SleepRecord
+	err := c.get(ctx, "/activity/sleep/"+url.PathEscape(id), &r)
+	return &r, err
+}
+
+func (c *Client) GetRecoveryForCycle(ctx context.Context, id int64) (*RecoveryRecord, error) {
+	var r RecoveryRecord
+	err := c.get(ctx, fmt.Sprintf("/cycle/%d/recovery", id), &r)
+	return &r, err
+}
+
 func fetchAll[T any](ctx context.Context, c *Client, path string, start, end time.Time) ([]T, error) {
+	if !start.Before(end) {
+		return nil, fmt.Errorf("start must be before end")
+	}
 	var all []T
 	nextToken := ""
-
+	seen := map[string]bool{}
 	for {
-		params := url.Values{
-			"start": {start.Format(time.RFC3339)},
-			"end":   {end.Format(time.RFC3339)},
-		}
+		params := url.Values{"start": {start.UTC().Format(time.RFC3339Nano)}, "end": {end.UTC().Format(time.RFC3339Nano)}, "limit": {"25"}}
 		if nextToken != "" {
 			params.Set("nextToken", nextToken)
 		}
-
-		reqURL := baseURL + path + "?" + params.Encode()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request for %s: %w", path, err)
-		}
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("request to %s failed: %w", path, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("%s returned status %d: %s", path, resp.StatusCode, string(body))
-		}
-
 		var page PaginatedResponse[T]
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			return nil, fmt.Errorf("failed to decode %s response: %w", path, err)
+		if err := c.get(ctx, path+"?"+params.Encode(), &page); err != nil {
+			return nil, err
 		}
-
 		all = append(all, page.Records...)
-
 		if page.NextToken == "" {
-			break
+			return all, nil
 		}
+		if seen[page.NextToken] {
+			return nil, fmt.Errorf("WHOOP repeated pagination token")
+		}
+		seen[page.NextToken] = true
 		nextToken = page.NextToken
 	}
-
-	return all, nil
 }
 
 // RefreshAccessToken uses a refresh token to get a new access/refresh token pair.
@@ -169,15 +200,14 @@ func RefreshAccessToken(ctx context.Context, cfg *OAuthConfig, refreshToken stri
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("refresh request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("refresh returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("refresh returned status %d", resp.StatusCode)
 	}
 
 	var tokens TokenResponse

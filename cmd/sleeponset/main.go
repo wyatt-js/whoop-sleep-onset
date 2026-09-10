@@ -17,7 +17,6 @@ var rootCmd = &cobra.Command{
 func init() {
 	home, _ := os.UserHomeDir()
 	cfgDir := filepath.Join(home, ".sleeponset")
-	os.MkdirAll(cfgDir, 0o755)
 
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
