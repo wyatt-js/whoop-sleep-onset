@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -21,11 +23,18 @@ import (
 )
 
 var (
-	db       *dynamo.Client
+	db       syncStore
 	oauthCfg *whoop.OAuthConfig
 )
 
-func init() {
+type syncStore interface {
+	GetUserByWhoopID(context.Context, int) (*dynamo.User, error)
+	PutUser(context.Context, *dynamo.User) error
+	PutSyncRecord(context.Context, string, string, string) error
+	DeleteSyncByID(context.Context, string, string, string) error
+}
+
+func initialize() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 
@@ -95,35 +104,30 @@ func handler(ctx context.Context, event events.DynamoDBEvent) error {
 			continue
 		}
 
-		accessToken, err := ensureValidToken(ctx, user)
-		if err != nil {
-			logger.Error().Err(err).Msg("failed to refresh token")
+		id, ok := img["whoop_id"]
+		if !ok || id.String() == "" {
 			syncErrors++
 			continue
 		}
-
-		client := &whoop.Client{AccessToken: accessToken}
-		now := time.Now().UTC()
-		start := now.Add(-24 * time.Hour)
-
-		switch eventType {
-		case "sleep.updated", "sleep.created":
-			if err := syncSleep(ctx, client, user.PK, start, now); err != nil {
-				logger.Error().Err(err).Msg("failed to sync sleep")
+		var client *whoop.Client
+		if eventType == "sleep.updated" || eventType == "recovery.updated" {
+			accessToken, err := ensureValidToken(ctx, user)
+			if err != nil {
+				logger.Error().Err(err).Msg("failed to refresh token")
 				syncErrors++
+				continue
 			}
-		case "recovery.updated", "recovery.created":
-			if err := syncRecovery(ctx, client, user.PK, start, now); err != nil {
-				logger.Error().Err(err).Msg("failed to sync recovery")
-				syncErrors++
-			}
-		default:
-			logger.Info().Msg("unhandled webhook type, skipping")
+			client = &whoop.Client{AccessToken: accessToken}
 		}
+		if err := syncEvent(ctx, client, user.PK, eventType, id.String()); err != nil {
+			logger.Error().Err(err).Msg("failed to sync webhook object")
+			syncErrors++
+		}
+
 	}
 
 	if syncErrors > 0 {
-		log.Warn().Int("errors", syncErrors).Msg("sync completed with errors")
+		return fmt.Errorf("%d webhook records failed; retry batch", syncErrors)
 	}
 	return nil
 }
@@ -149,46 +153,56 @@ func ensureValidToken(ctx context.Context, user *dynamo.User) (string, error) {
 	return tokens.AccessToken, nil
 }
 
-func syncSleep(ctx context.Context, client *whoop.Client, userPK string, start, end time.Time) error {
-	records, err := client.GetSleep(ctx, start, end)
+func syncEvent(ctx context.Context, client *whoop.Client, userPK, eventType, id string) error {
+	switch eventType {
+	case "sleep.deleted":
+		if err := db.DeleteSyncByID(ctx, userPK, "SLEEP#", id); err != nil {
+			return err
+		}
+		return db.DeleteSyncByID(ctx, userPK, "RECOVERY#", id)
+	case "recovery.deleted":
+		return db.DeleteSyncByID(ctx, userPK, "RECOVERY#", id)
+	case "sleep.updated", "recovery.updated":
+	default:
+		return nil
+	}
+	sleep, err := client.GetSleepByID(ctx, id)
 	if err != nil {
+		var apiErr *whoop.HTTPError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			if err := db.DeleteSyncByID(ctx, userPK, "SLEEP#", id); err != nil {
+				return err
+			}
+			return db.DeleteSyncByID(ctx, userPK, "RECOVERY#", id)
+		}
 		return err
 	}
-
-	for _, r := range records {
-		data, err := json.Marshal(r)
-		if err != nil {
-			return fmt.Errorf("failed to marshal sleep record: %w", err)
-		}
-		sk := fmt.Sprintf("SLEEP#%s", r.Start.Format(time.RFC3339))
-		if err := db.PutSyncRecord(ctx, userPK, sk, string(data)); err != nil {
-			return fmt.Errorf("failed to store sleep record %s: %w", r.ID, err)
-		}
+	if err := storeRecord(ctx, userPK, "SLEEP#"+sleep.ID, sleep); err != nil {
+		return err
 	}
-
-	log.Info().Str("user", userPK).Int("count", len(records)).Msg("synced sleep")
-	return nil
+	if eventType == "sleep.updated" {
+		return nil
+	}
+	recovery, err := client.GetRecoveryForCycle(ctx, sleep.CycleID)
+	if err != nil {
+		var apiErr *whoop.HTTPError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return db.DeleteSyncByID(ctx, userPK, "RECOVERY#", id)
+		}
+		return err
+	}
+	if recovery.SleepID != sleep.ID {
+		return fmt.Errorf("recovery does not match webhook sleep")
+	}
+	return storeRecord(ctx, userPK, "RECOVERY#"+recovery.SleepID, recovery)
 }
 
-func syncRecovery(ctx context.Context, client *whoop.Client, userPK string, start, end time.Time) error {
-	records, err := client.GetRecovery(ctx, start, end)
+func storeRecord(ctx context.Context, userPK, sk string, record any) error {
+	data, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-
-	for _, r := range records {
-		data, err := json.Marshal(r)
-		if err != nil {
-			return fmt.Errorf("failed to marshal recovery record: %w", err)
-		}
-		sk := fmt.Sprintf("RECOVERY#%s", r.CreatedAt.Format(time.RFC3339))
-		if err := db.PutSyncRecord(ctx, userPK, sk, string(data)); err != nil {
-			return fmt.Errorf("failed to store recovery record %s: %w", r.CycleID, err)
-		}
-	}
-
-	log.Info().Str("user", userPK).Int("count", len(records)).Msg("synced recovery")
-	return nil
+	return db.PutSyncRecord(ctx, userPK, sk, string(data))
 }
 
 func loadOAuthConfig(ctx context.Context) (*whoop.OAuthConfig, error) {
@@ -207,11 +221,17 @@ func loadOAuthConfig(ctx context.Context) (*whoop.OAuthConfig, error) {
 		return nil, fmt.Errorf("failed to get secret: %w", err)
 	}
 
+	if result.SecretString == nil {
+		return nil, fmt.Errorf("secret must contain a JSON string")
+	}
 	var secrets map[string]string
 	if err := json.Unmarshal([]byte(*result.SecretString), &secrets); err != nil {
 		return nil, fmt.Errorf("failed to parse secret: %w", err)
 	}
 
+	if secrets["WHOOP_CLIENT_ID"] == "" || secrets["WHOOP_CLIENT_SECRET"] == "" {
+		return nil, fmt.Errorf("WHOOP client credentials are missing from secret")
+	}
 	return &whoop.OAuthConfig{
 		ClientID:     secrets["WHOOP_CLIENT_ID"],
 		ClientSecret: secrets["WHOOP_CLIENT_SECRET"],
@@ -220,5 +240,6 @@ func loadOAuthConfig(ctx context.Context) (*whoop.OAuthConfig, error) {
 }
 
 func main() {
+	initialize()
 	lambda.Start(handler)
 }

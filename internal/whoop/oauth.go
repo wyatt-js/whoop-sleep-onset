@@ -65,7 +65,7 @@ func ExchangeCode(ctx context.Context, cfg *OAuthConfig, code string) (*TokenRes
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}

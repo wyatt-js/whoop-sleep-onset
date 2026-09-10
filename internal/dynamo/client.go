@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -36,6 +37,7 @@ type PhoneLockEvent struct {
 }
 
 func (c *Client) PutPhoneLockEvent(ctx context.Context, userID string, lockedAt time.Time) error {
+	lockedAt = lockedAt.UTC()
 	event := PhoneLockEvent{
 		PK:       userID,
 		SK:       fmt.Sprintf("PHONELOCK#%s", lockedAt.Format(time.RFC3339)),
@@ -166,7 +168,7 @@ func (c *Client) PutWebhookEvent(ctx context.Context, whoopUserID int, eventType
 	now := time.Now().UTC()
 	event := WebhookEvent{
 		PK:        fmt.Sprintf("WHOOPUSER#%d", whoopUserID),
-		SK:        fmt.Sprintf("WEBHOOK#%s#%s", eventType, now.Format(time.RFC3339)),
+		SK:        fmt.Sprintf("WEBHOOK#%s#%s#%s", eventType, now.Format(time.RFC3339Nano), traceID),
 		Type:      eventType,
 		WhoopID:   whoopID,
 		TraceID:   traceID,
@@ -187,10 +189,10 @@ func (c *Client) PutWebhookEvent(ctx context.Context, whoopUserID int, eventType
 }
 
 type SyncRecord struct {
-	PK        string    `dynamodbav:"PK"`
-	SK        string    `dynamodbav:"SK"`
-	Data      string    `dynamodbav:"data"`
-	SyncedAt  time.Time `dynamodbav:"synced_at"`
+	PK       string    `dynamodbav:"PK"`
+	SK       string    `dynamodbav:"SK"`
+	Data     string    `dynamodbav:"data"`
+	SyncedAt time.Time `dynamodbav:"synced_at"`
 }
 
 func (c *Client) PutSyncRecord(ctx context.Context, userPK, sk, data string) error {
@@ -214,52 +216,74 @@ func (c *Client) PutSyncRecord(ctx context.Context, userPK, sk, data string) err
 	return err
 }
 
-// GetRecentSyncRecords queries for the N most recent records matching a SK prefix (e.g. "SLEEP#", "RECOVERY#").
-func (c *Client) GetRecentSyncRecords(ctx context.Context, userPK, skPrefix string, limit int) ([]SyncRecord, error) {
-	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(tableName),
-		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":     &types.AttributeValueMemberS{Value: userPK},
-			":prefix": &types.AttributeValueMemberS{Value: skPrefix},
-		},
-		ScanIndexForward: aws.Bool(false),
-		Limit:            aws.Int32(int32(limit)),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to query recent %s: %w", skPrefix, err)
+// queryPrefix follows every DynamoDB page. A zero limit means all records.
+func (c *Client) queryPrefix(ctx context.Context, userPK, prefix string, limit int) ([]map[string]types.AttributeValue, error) {
+	input := &dynamodb.QueryInput{
+		TableName:                 aws.String(tableName),
+		KeyConditionExpression:    aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": &types.AttributeValueMemberS{Value: userPK}, ":prefix": &types.AttributeValueMemberS{Value: prefix}},
+		ScanIndexForward:          aws.Bool(false), ConsistentRead: aws.Bool(true),
 	}
-
-	var records []SyncRecord
-	if err := attributevalue.UnmarshalListOfMaps(result.Items, &records); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal sync records: %w", err)
+	var items []map[string]types.AttributeValue
+	for {
+		if limit > 0 {
+			input.Limit = aws.Int32(int32(limit - len(items)))
+		}
+		result, err := c.db.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("query %s: %w", prefix, err)
+		}
+		items = append(items, result.Items...)
+		if len(result.LastEvaluatedKey) == 0 || (limit > 0 && len(items) >= limit) {
+			return items, nil
+		}
+		input.ExclusiveStartKey = result.LastEvaluatedKey
 	}
-
-	return records, nil
 }
 
-// GetRecentPhoneLockEvents queries for the N most recent phone lock events.
-func (c *Client) GetRecentPhoneLockEvents(ctx context.Context, userPK string, limit int) ([]PhoneLockEvent, error) {
-	result, err := c.db.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(tableName),
-		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":     &types.AttributeValueMemberS{Value: userPK},
-			":prefix": &types.AttributeValueMemberS{Value: "PHONELOCK#"},
-		},
-		ScanIndexForward: aws.Bool(false),
-		Limit:            aws.Int32(int32(limit)),
-	})
+func (c *Client) GetRecentSyncRecords(ctx context.Context, userPK, prefix string, limit int) ([]SyncRecord, error) {
+	items, err := c.queryPrefix(ctx, userPK, prefix, limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query recent phone locks: %w", err)
+		return nil, err
 	}
+	var records []SyncRecord
+	err = attributevalue.UnmarshalListOfMaps(items, &records)
+	return records, err
+}
 
-	var events []PhoneLockEvent
-	if err := attributevalue.UnmarshalListOfMaps(result.Items, &events); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal phone lock events: %w", err)
+func (c *Client) GetRecentPhoneLockEvents(ctx context.Context, userPK string, limit int) ([]PhoneLockEvent, error) {
+	items, err := c.queryPrefix(ctx, userPK, "PHONELOCK#", limit)
+	if err != nil {
+		return nil, err
 	}
+	var records []PhoneLockEvent
+	err = attributevalue.UnmarshalListOfMaps(items, &records)
+	return records, err
+}
 
-	return events, nil
+// DeleteSyncByID also removes legacy timestamp-keyed copies after an edit/delete.
+func (c *Client) DeleteSyncByID(ctx context.Context, userPK, prefix, id string) error {
+	records, err := c.GetRecentSyncRecords(ctx, userPK, prefix, 0)
+	if err != nil {
+		return err
+	}
+	for _, r := range records {
+		var fields struct {
+			ID      string `json:"id"`
+			SleepID string `json:"sleep_id"`
+		}
+		if err := json.Unmarshal([]byte(r.Data), &fields); err != nil {
+			return err
+		}
+		if fields.ID != id && fields.SleepID != id {
+			continue
+		}
+		_, err := c.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(tableName), Key: map[string]types.AttributeValue{"PK": &types.AttributeValueMemberS{Value: userPK}, "SK": &types.AttributeValueMemberS{Value: r.SK}}})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetLatestSyncRecord queries for the most recent record matching a SK prefix (e.g. "SLEEP#", "RECOVERY#").

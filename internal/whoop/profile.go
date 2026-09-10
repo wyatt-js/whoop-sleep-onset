@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-const profileURL = "https://api.prod.whoop.com/developer/v1/user/profile/basic"
+const profileURL = "https://api.prod.whoop.com/developer/v2/user/profile/basic"
 
 type Profile struct {
 	UserID    int    `json:"user_id"`
@@ -22,7 +22,7 @@ func GetProfile(ctx context.Context, accessToken string) (*Profile, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("profile request failed: %w", err)
 	}
