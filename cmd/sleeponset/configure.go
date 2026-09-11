@@ -11,13 +11,13 @@ import (
 
 var configureCmd = &cobra.Command{
 	Use:   "configure",
-	Short: "Save your API token",
+	Short: "Save API connection settings",
 	RunE:  runConfigure,
 }
 
 func init() {
-	configureCmd.Flags().String("token", "", "Bearer token from WHOOP auth")
-	configureCmd.Flags().String("api-url", "", "API Gateway URL (optional)")
+	configureCmd.Flags().String("token", "", "Application token shown after WHOOP sign-in")
+	configureCmd.Flags().String("api-url", "", "HTTPS API Gateway base URL")
 	rootCmd.AddCommand(configureCmd)
 }
 
@@ -34,6 +34,11 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 	}
 	if apiURL != "" {
 		viper.Set("api_url", apiURL)
+		normalized, err := apiBaseURL()
+		if err != nil {
+			return err
+		}
+		viper.Set("api_url", normalized)
 	}
 
 	home, err := os.UserHomeDir()
