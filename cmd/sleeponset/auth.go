@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"runtime"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var authCmd = &cobra.Command{
@@ -19,8 +19,35 @@ func init() {
 }
 
 func runAuth(cmd *cobra.Command, args []string) error {
-	apiURL := viper.GetString("api_url")
+	apiURL, err := apiBaseURL()
+	if err != nil {
+		return err
+	}
 	authURL := apiURL + "/auth/whoop/start"
 	fmt.Println("Opening browser to authenticate with WHOOP...")
-	return exec.Command("open", authURL).Start()
+	if err := openBrowser(authURL); err != nil {
+		fmt.Printf("Open this URL in your browser:\n%s\n", authURL)
+	}
+	return nil
+}
+
+func openBrowser(target string) error {
+	name, args, err := browserCommand(runtime.GOOS, target)
+	if err != nil {
+		return err
+	}
+	return exec.Command(name, args...).Start()
+}
+
+func browserCommand(goos, target string) (string, []string, error) {
+	switch goos {
+	case "darwin":
+		return "open", []string{target}, nil
+	case "linux":
+		return "xdg-open", []string{target}, nil
+	case "windows":
+		return "rundll32", []string{"url.dll,FileProtocolHandler", target}, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported platform")
+	}
 }

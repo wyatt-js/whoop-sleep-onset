@@ -7,19 +7,27 @@ A Go CLI that estimates the time between putting your phone down and WHOOP’s r
 
 This is a personal tracking estimate: connecting a charger does not prove you stopped using your phone, and WHOOP’s sleep start is not a clinical measurement of sleep onset.
 
-## Run
+## Setup
 
-Requires Go 1.25.5+, a WHOOP account, and a configured AWS backend ([setup](docs/setup.md)).
+Requires Go 1.25.5+, an iPhone, a WHOOP account, and an AWS account. The repository does not provision AWS automatically.
+
+1. Deploy the two Lambda functions, DynamoDB table, and API Gateway routes in the [backend setup guide](docs/setup.md). Copy the resulting HTTPS API URL.
+2. Build and connect the CLI:
 
 ```sh
 make build-cli
 ./bin/sleeponset configure --api-url https://YOUR_API_HOST
 ./bin/sleeponset auth
-./bin/sleeponset configure --token YOUR_APP_TOKEN
-./bin/sleeponset last
 ```
 
-On your iPhone, create a **Charger → Is Connected** automation that runs immediately during your bedtime hours. Add **Get Contents of URL**: `POST https://YOUR_API_HOST/phone-lock`, with the header `Authorization: Bearer YOUR_APP_TOKEN`. No body is required.
+3. After WHOOP sign-in, save the application token shown in the browser:
+
+```sh
+./bin/sleeponset configure --token YOUR_APP_TOKEN
+```
+
+4. On your iPhone, create a **Charger → Is Connected** automation that runs immediately during your bedtime hours. Add **Get Contents of URL**: `POST https://YOUR_API_HOST/phone-lock`, with the header `Authorization: Bearer YOUR_APP_TOKEN`. No body is required.
+5. After WHOOP processes your next sleep, run `./bin/sleeponset last`.
 
 ## How matching works
 

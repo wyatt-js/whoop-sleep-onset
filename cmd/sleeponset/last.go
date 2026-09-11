@@ -76,7 +76,10 @@ func runLast(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated — run: sleeponset configure --token <token>")
 	}
 
-	apiURL := viper.GetString("api_url")
+	apiURL, err := apiBaseURL()
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, apiURL+"/last", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
