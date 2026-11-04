@@ -9,9 +9,9 @@ This is a personal tracking estimate: connecting a charger does not prove you st
 
 ## Setup
 
-Requires Go 1.25.5+, an iPhone, a WHOOP account, and an AWS account. The repository does not provision AWS automatically.
+Requires Go 1.25.5+, an iPhone, a WHOOP account, and an AWS account. The existing backend is deployed in `us-east-1`; AWS CLI checks and deployment commands are included.
 
-1. Deploy the two Lambda functions, DynamoDB table, and API Gateway routes in the [backend setup guide](docs/setup.md). Copy the resulting HTTPS API URL.
+1. Verify or deploy the backend using the [backend setup guide](docs/setup.md). For a new AWS account, provision the resources listed there first. Copy the HTTPS API URL.
 2. Build and connect the CLI:
 
 ```sh
