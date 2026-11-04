@@ -1,6 +1,31 @@
 # Backend setup
 
-The repository contains application code; AWS infrastructure must be provisioned separately. Install Go 1.25.5+ and `zip`, then build from source.
+Install Go 1.25.5+, Python 3, AWS CLI v2, and `zip`. The existing deployment is recorded in `infra/backend.json`; it uses account `927006997759` in `us-east-1` and API URL `https://ozls3538ce.execute-api.us-east-1.amazonaws.com`.
+
+## Operate the existing backend
+
+```sh
+aws login --profile whoop --region us-east-1
+make check-backend
+make deploy-backend
+```
+
+`check-backend` reads the live configuration and verifies table keys/index/stream, Lambda settings, WHOOP secret fields, API routes and integration, effective IAM permissions, stream filters/retries/failure destination, backups, deletion protection, and CloudWatch alarms. It also checks HTTPS OAuth and rejection of unauthenticated requests. It never prints credential values or writes application data. Alarm states and the failure queue count are reported for investigation; an alarm does not itself make configuration verification fail.
+
+`deploy-backend` checks the existing resources, runs Go race tests and vet, builds both ARM64 packages, saves the previous packages under ignored `bin/rollback/`, and updates both Lambdas. It checks uploaded SHA-256 hashes, rechecks the backend, and runs the temporary-data smoke test below. If an upload or subsequent check fails, it attempts to restore any updated functions. Lambda versions are published for tracking; API Gateway and the stream continue to invoke `$LATEST`. Keep this command running until completion. AWS credential expiration or process interruption can prevent automatic rollback; use the saved ZIP files with `aws lambda update-function-code` if needed. Infrastructure settings and environment variables are managed separately.
+
+```sh
+make protect-backend
+make smoke-backend
+# A different authenticated profile in the same account:
+make check-backend AWS_PROFILE=my-profile
+```
+
+`protect-backend` idempotently enables table deletion protection and 35-day point-in-time recovery, then creates six CloudWatch alarms: API and sync Lambda errors, sync iterator age above five minutes, failure destination delivery errors, a nonempty failure queue, and API Gateway server errors. These services incur normal AWS charges. Alarms appear in CloudWatch; email/SNS notifications require a separately configured subscription. This command does not change log retention or remove existing data.
+
+`smoke-backend` creates an isolated temporary user with a random token, verifies authenticated `/last` and phone-event persistence, seeds two disposable sleep/recovery markers, and posts a signed deletion webhook. It checks that the real stream worker deletes both markers, then removes the temporary user, phone event, and webhook rows. No real WHOOP OAuth tokens or outbound WHOOP requests are used. Ordinary Lambda, API, DynamoDB, and CloudWatch request charges apply. If the process is interrupted, temporary rows can remain under the synthetic user's partitions; they do not affect real users.
+
+These commands operate the existing resources and refuse to run against a different account. They do not create a fresh deployment or register settings in WHOOP's developer dashboard. For a new deployment, follow the resource checklist below and update `infra/backend.json`. The application currently uses the fixed DynamoDB table name `sleep-onset-events`.
 
 ## AWS resources
 

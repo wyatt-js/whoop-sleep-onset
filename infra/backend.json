@@ -1,0 +1,12 @@
+{
+  "account_id": "927006997759",
+  "profile": "whoop",
+  "region": "us-east-1",
+  "api_id": "ozls3538ce",
+  "api_function": "WSO-Go-Binary",
+  "sync_function": "WSO-Go-Sync",
+  "table": "sleep-onset-events",
+  "secret": "WSO",
+  "failure_queue": "whoop-sync-failures",
+  "timezone": "America/New_York"
+}

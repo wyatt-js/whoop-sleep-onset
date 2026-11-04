@@ -5,3 +5,4 @@
 !.env.example
 coverage.out
 *.test
+__pycache__/
